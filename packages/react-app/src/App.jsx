@@ -30,8 +30,10 @@ import Fortmatic from "fortmatic";
 import Authereum from "authereum";
 import humanizeDuration from "humanize-duration";
 import TextArea from "antd/lib/input/TextArea";
+import { ConsoleSqlOutlined } from "@ant-design/icons";
 
 const { ethers } = require("ethers");
+
 /*
     Welcome to 🏗 scaffold-eth !
 
@@ -52,7 +54,7 @@ const { ethers } = require("ethers");
 */
 
 /// 📡 What chain are your contracts deployed to?
-const targetNetwork = NETWORKS.localhost; // <------- select your target frontend network (localhost, rinkeby, xdai, mainnet)
+const targetNetwork = NETWORKS.goerli; // <------- select your target frontend network (localhost, rinkeby, xdai, mainnet)
 
 // 😬 Sorry for all the console logging
 const DEBUG = true;
@@ -170,7 +172,7 @@ const web3Modal = new Web3Modal({
  * if false, the client will have to manually trigger each payment.
  */
 let autoPay = true;
-
+let redeemed = [];
 function App(props) {
   const mainnetProvider =
     poktMainnetProvider && poktMainnetProvider._isProvider
@@ -247,7 +249,9 @@ function App(props) {
   console.log("open events:", openEvents);
   const challengeEvents = useEventListener(readContracts, "Streamer", "Challenged", localProvider, 1);
   console.log("close events:", challengeEvents);
+  // console.log("closed even 0  : ", challengeEvents[challengeEvents.length - 1].args[0]);
   const closeEvents = useEventListener(readContracts, "Streamer", "Closed", localProvider, 1);
+  console.log("vouchers are : ", vouchers());
 
   function onchainChannels() {
     let opened = [];
@@ -293,7 +297,9 @@ function App(props) {
     // turn off the noisy interval mining if there are
     // no expected challenge channels after this tx
     try {
-      localProvider.send("evm_setIntervalMining", [0]);
+      if (selectedChainId == 31337) {
+        localProvider.send("evm_setIntervalMining", [0]);
+      }
     } catch (e) {}
   }
 
@@ -329,8 +335,6 @@ function App(props) {
     return window.userChannel;
   }
 
-
-  
   //This is the wisdome the client is paying for. It'd better be good.
   let recievedWisdom = "";
 
@@ -376,9 +380,10 @@ function App(props) {
    * @param {string} wisdom
    */
   async function reimburseService(wisdom) {
-    const initialBalance = ethers.utils.parseEther("0.5");
+    const initialBalance = ethers.utils.parseEther("0.2");
     const costPerCharacter = ethers.utils.parseEther("0.001");
     const duePayment = costPerCharacter.mul(ethers.BigNumber.from(wisdom.length));
+    console.log("duePayment=", duePayment.toString());
 
     let updatedBalance = initialBalance.sub(duePayment);
 
@@ -435,6 +440,7 @@ function App(props) {
     if (window.vouchers === undefined) {
       window.vouchers = {};
     }
+
     return window.vouchers;
   }
 
@@ -474,7 +480,16 @@ function App(props) {
        *  recreate the packed, hashed, and arrayified message from reimburseService (above),
        *  and then use ethers.utils.verifyMessage() to confirm that voucher signer was
        *  `clientAddress`. (If it wasn't, log some error message and return).
-      */
+       */
+      const packed = ethers.utils.solidityPack(["uint256"], [updatedBalance]);
+      const hashed = ethers.utils.keccak256(packed);
+      const arrayified = ethers.utils.arrayify(hashed);
+      // console.log("Vocher verification: voucher is : ", voucher);
+      let voucherSigner = ethers.utils.verifyMessage(arrayified, voucher.data.signature);
+      if (voucherSigner != clientAddress) {
+        console.log("Vocher verification: the voucher Signer is not the client address!! ");
+        return;
+      }
 
       const existingVoucher = vouchers()[clientAddress];
 
@@ -496,7 +511,7 @@ function App(props) {
       return;
     }
 
-    const init = ethers.utils.parseEther("0.5");
+    const init = ethers.utils.parseEther("0.2");
     const updated = vouchers()[clientAddress].updatedBalance;
 
     const claimable = init.sub(updated);
@@ -529,11 +544,25 @@ function App(props) {
    */
   function provideService(clientAddress) {
     const channelInput = document.getElementById("input-" + clientAddress);
+    let enableProvide = true;
     if (channelInput) {
-      const wisdom = channelInput.value;
-      // console.log("sending: %s", wisdom);
-      channels[clientAddress].postMessage(wisdom);
-      document.getElementById(`provided-${clientAddress}`).innerText = wisdom.length;
+      let clientBestVouchers = vouchers()[clientAddress];
+      console.log("clientBestVouchers is ", clientBestVouchers);
+      // if (clientBestVouchers && clientBestVouchers.updatedBalance > 0) {
+      //   console.log("clientBestVouchers.updatedBalance is :", clientBestVouchers.updatedBalance.toString());}
+      if (clientBestVouchers && clientBestVouchers.updatedBalance <= 0) {
+        console.log("the Rube's balance is over!!");
+        enableProvide = false;
+        document.getElementById("input-" + clientAddress).setAttribute("disabled", "true");
+        return;
+      }
+      if (enableProvide) {
+        const wisdom = channelInput.value;
+        console.log("sending: %s", wisdom);
+        channels[clientAddress].postMessage(wisdom);
+        console.log("provide Service: channels[clientAddress] = ", channels[clientAddress]);
+        document.getElementById(`provided-${clientAddress}`).innerText = wisdom.length;
+      }
     } else {
       console.warn(`Failed to get ChannelInput. Found: ${channelInput}`);
     }
@@ -550,7 +579,7 @@ function App(props) {
    */
   async function claimPaymentOnChain(clientAddress) {
     console.log("Claiming voucher on chain...");
-    // logVouchers();
+    logVouchers();
 
     if (vouchers()[clientAddress] == undefined) {
       console.warn(`no voucher found for ${clientAddress}`);
@@ -561,10 +590,13 @@ function App(props) {
     const sig = ethers.utils.splitSignature(vouchers()[clientAddress].signature);
 
     tx(
-      writeContracts.Streamer.withdrawEarnings({
-        updatedBalance,
-        sig,
-      }),
+      writeContracts.Streamer.withdrawEarnings(
+        {
+          updatedBalance,
+          sig,
+        },
+        { gasLimit: 500000 },
+      ),
     );
   }
 
@@ -729,6 +761,25 @@ function App(props) {
       </div>
     );
   }
+  let index;
+  if (userIsOwner) {
+    if (chainChannels.challenged.length > 0) {
+      for (let j = 0; j < chainChannels.challenged.length; j++) {
+        index = 0;
+        for (let i = 0; i < redeemed.length; i++) {
+          if (redeemed[i] == chainChannels.challenged[j]) {
+            break;
+          }
+          index = index + 1;
+        }
+        if (index == redeemed.length) {
+          redeemed.push(chainChannels.challenged[j]);
+          console.log("redeemed are ", redeemed);
+          claimPaymentOnChain(chainChannels.challenged[j]);
+        }
+      }
+    }
+  }
 
   return (
     <div className="App">
@@ -769,11 +820,8 @@ function App(props) {
                 <h2>
                   You have {chainChannels.opened.length} channel{chainChannels.opened.length == 1 ? "" : "s"} open.
                 </h2>
-                Channels with{" "}
-                <Button size="small" danger type="primary">
-                  RED
-                </Button>{" "}
-                withdrawal buttons are under challenge on-chain, and should be redeemed ASAP.
+                When a Rube challenges a channel, the last voucher will be sent automatically on-chain to keep the Guru
+                safe!
                 <List
                   const
                   dataSource={chainChannels.opened}
@@ -781,6 +829,7 @@ function App(props) {
                     <List.Item key={clientAddress}>
                       <Address value={clientAddress} ensProvider={mainnetProvider} fontSize={12} />
                       <TextArea
+                        disabled={false}
                         style={{ margin: 5 }}
                         rows={3}
                         placeholder="Provide your wisdom here..."
@@ -800,18 +849,18 @@ function App(props) {
                         </div>
                       </Card>
 
-                      {/* Checkpoint 5:
+                      {/* Checkpoint 5: */}
                       <Button
                         style={{ margin: 5 }}
                         type="primary"
                         danger={chainChannels.challenged.includes(clientAddress)}
-                        disabled={chainChannels.closed.includes(clientAddress)}
+                        disabled={chainChannels.challenged.includes(clientAddress) ? true : false}
                         onClick={() => {
                           claimPaymentOnChain(clientAddress);
                         }}
                       >
                         Cash out latest voucher
-                      </Button> */}
+                      </Button>
                     </List.Item>
                   )}
                 ></List>
@@ -849,11 +898,13 @@ function App(props) {
 
                       <Col span={16}>
                         <Card title="Received Wisdom">
-                          <span id={"recievedWisdom-" + userAddress}></span>
+                          <div style={{ overflowWrap: "break-word" }}>
+                            <span id={"recievedWisdom-" + userAddress}></span>
+                          </div>
                         </Card>
                       </Col>
 
-                      {/* Checkpoint 6: challenge & closure
+                      {/* Checkpoint 6: challenge & closure */}
 
                       <Col span={5}>
                         <Button
@@ -862,12 +913,20 @@ function App(props) {
                           onClick={() => {
                             // disable the production of further voucher signatures
                             autoPay = false;
+
+                            // console.log("challengingClientAddress is ", challengeEvents[challengeEvents.length-1].args[0]);
                             tx(writeContracts.Streamer.challengeChannel());
-                            try {
-                              // ensure a 'ticking clock' for the UI without having
-                              // to send new transactions & mine new blocks
-                              localProvider.send("evm_setIntervalMining", [5000]);
-                            } catch (e) {}
+
+                            // let challengingClientAddress = challengeEvents[challengeEvents.length - 1].args[0];
+
+                            // claimPaymentOnChain(challengingClientAddress);
+                            if (selectedChainId == 31337) {
+                              try {
+                                // ensure a 'ticking clock' for the UI without having
+                                // to send new transactions & mine new blocks
+                                localProvider.send("evm_setIntervalMining", [5000]);
+                              } catch (e) {}
+                            }
                           }}
                         >
                           Challenge this channel!
@@ -887,7 +946,7 @@ function App(props) {
                         >
                           Close and withdraw funds
                         </Button>
-                      </Col> */}
+                      </Col>
                     </Row>
                   </div>
                 ) : hasClosedChannel() ? (
@@ -903,10 +962,10 @@ function App(props) {
                     <Button
                       type="primary"
                       onClick={() => {
-                        tx(writeContracts.Streamer.fundChannel({ value: ethers.utils.parseEther("0.5") }));
+                        tx(writeContracts.Streamer.fundChannel({ value: ethers.utils.parseEther("0.2") }));
                       }}
                     >
-                      Open a 0.5 ETH channel for advice from the Guru.
+                      Open a 0.2 ETH channel for advice from the Guru.
                     </Button>
                   </div>
                 )}

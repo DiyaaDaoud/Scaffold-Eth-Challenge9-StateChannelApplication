@@ -255,7 +255,7 @@ module.exports = {
   },
   etherscan: {
     // Add your api key here
-    apiKey: "H4FGK1QG87JUVEYJQDY7F2UF5IGEX42TUF",
+    apiKey: "QNJUV157RAGF95WCZPV7G9KDDJRIXSEJS9",
   },
 };
 

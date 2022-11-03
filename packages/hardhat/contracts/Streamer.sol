@@ -10,7 +10,7 @@ contract Streamer is Ownable {
     event Withdrawn(address, uint256);
     event Closed(address);
 
-    mapping(address => uint256) balances;
+    mapping(address => uint256) public balances;
     mapping(address => uint256) canCloseAt;
 
     function fundChannel() public payable {
@@ -18,10 +18,17 @@ contract Streamer is Ownable {
         Checkpoint 3: fund a channel
 
         complete this function so that it:
-        - reverts if msg.sender already has a running channel (ie, if balances[msg.sender] != 0)
-        - updates the balances mapping with the eth received in the function call
-        - emits an Opened event
+        - reverts if msg.sender already has a running channel (ie, if balances[msg.sender] != 0) ✅
+        - updates the balances mapping with the eth received in the function call ✅
+        - emits an Opened event ✅
         */
+        require(
+            balances[msg.sender] == 0,
+            "Rube already has a running channel!"
+        );
+        balances[msg.sender] += msg.value;
+        // (bool succecc, ) = payable(address(this)).call{value: msg.value}("");
+        emit Opened(msg.sender, msg.value);
     }
 
     function timeLeft(address channel) public view returns (uint256) {
@@ -29,7 +36,7 @@ contract Streamer is Ownable {
         return canCloseAt[channel] - block.timestamp;
     }
 
-    function withdrawEarnings(Voucher calldata voucher) public {
+    function withdrawEarnings(Voucher calldata voucher) public onlyOwner {
         // like the off-chain code, signatures are applied to the hash of the data
         // instead of the raw data itself
         bytes32 hashed = keccak256(abi.encode(voucher.updatedBalance));
@@ -53,22 +60,45 @@ contract Streamer is Ownable {
         Checkpoint 5: Recover earnings
 
         The service provider would like to cash out their hard earned ether.
-            - use ecrecover on prefixedHashed and the supplied signature
-            - require that the recovered signer has a running channel with balances[signer] > v.updatedBalance
-            - calculate the payment when reducing balances[signer] to v.updatedBalance
-            - adjust the channel balance, and pay the contract owner. (Get the owner address withthe `owner()` function)
-            - emit the Withdrawn event
+            - use ecrecover on prefixedHashed and the supplied signature ✅
+            - require that the recovered signer has a running channel with balances[signer] > v.updatedBalance ✅
+            - calculate the payment when reducing balances[signer] to v.updatedBalance ✅
+            - adjust the channel balance, and pay the contract owner. (Get the owner address withthe `owner()` function) ✅
+            - emit the Withdrawn event ✅
         */
+        address recovered = ecrecover(
+            prefixedHashed,
+            voucher.sig.v,
+            voucher.sig.r,
+            voucher.sig.s
+        );
+        require(
+            balances[recovered] > voucher.updatedBalance,
+            "No New wisdom sent in the channel of this Rube!"
+        );
+        uint256 payment = balances[recovered] - voucher.updatedBalance;
+        balances[recovered] -= payment;
+        (bool success, ) = payable(owner()).call{value: payment}("");
+        require(success, "withdrawing failed!");
+        emit Withdrawn(recovered, payment);
     }
 
     /*
     Checkpoint 6a: Challenge the channel
 
     create a public challengeChannel() function that:
-    - checks that msg.sender has an open channel
-    - updates canCloseAt[msg.sender] to some future time
-    - emits a Challenged event
+    - checks that msg.sender has an open channel ✅
+    - updates canCloseAt[msg.sender] to some future time ✅
+    - emits a Challenged event ✅
     */
+    function challengeChannel() public {
+        require(
+            balances[msg.sender] != 0,
+            "this Rube does not have an open channel!"
+        );
+        canCloseAt[msg.sender] = block.timestamp + 30 seconds;
+        emit Challenged(msg.sender);
+    }
 
     /*
     Checkpoint 6b: Close the channel
@@ -79,6 +109,23 @@ contract Streamer is Ownable {
     - sends the channel's remaining funds to msg.sender, and sets the balance to 0
     - emits the Closed event
     */
+
+    function defundChannel() public {
+        require(
+            canCloseAt[msg.sender] > 0,
+            "sender does not have a closing channel"
+        );
+        require(
+            block.timestamp > canCloseAt[msg.sender],
+            "challenge window time is not over to defund!"
+        );
+        console.log("trying to defund....");
+        (bool success, ) = payable(msg.sender).call{
+            value: balances[msg.sender]
+        }("");
+        require(success, "defunding channel failed!");
+        emit Closed(msg.sender);
+    }
 
     struct Voucher {
         uint256 updatedBalance;
